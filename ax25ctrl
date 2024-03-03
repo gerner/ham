@@ -1,0 +1,110 @@
+#!/bin/bash
+
+set -eu -o pipefail
+#set -x
+
+DIREWOLF_CONF=~/ham/direwolf/direwolf.conf
+DIREWOLF_LOG=~/ham/direwolf/direwolf.log
+KISS_LOG=~/ham/direwolf/kiss.log
+
+DIREWOLF_PIDFILE=/tmp/direwolf.pid
+KISS_PIDFILE=/tmp/kissattach.pid
+KISSUTIL_PIDFILE=/tmp/kissutil.pid
+
+KISS_PORT=wl2k
+
+set -- `getopt -n$0 -u -a --longoptions="start stop" "v" "$@"`
+
+# --start
+# start direwolf, we need to background it, capturing output to log:
+# make direwolf config path configurable? (default is ~/direwolf.conf)
+# direwolf -p
+
+# start kissattach, it backgrounds itself, but we want to grab the pid for
+# killing later:
+# sudo kissattach $(readlink /tmp/kisstnc) wl2k
+
+# turn off crc which direwolf doesn't like
+# sudo kissparms -c 1 -p wl2k
+
+# get kiss logging, if desired, background it capturing output to log:
+# start-stop-daemon --start -C -b -m -p $KISSUTIL_PIDFILE -x kissutil -- -T "%H:%M:%S %Z" -v 2>&1 > $KISSUTIL_LOGFILE
+
+
+# --stop
+# kill direwolf
+# kill kissattach
+
+function is_running {
+    ps au | awk '{print $2}' | grep $(cat $1) > /dev/null
+}
+
+START_EVERYTHING=""
+STOP_EVERYTHING=""
+use_kissutil=""
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --start)
+            shift
+            START_EVERYTHING=1
+            ;;
+        --stop)
+            shift
+            STOP_EVERYTHING=1
+            ;;
+        -v) use_kissutil=1;;
+        --) shift;break;;
+    esac
+    shift
+done
+
+if [[ ! -z "$START_EVERYTHING" ]]; then
+
+    #DIREWOLF_CARD="$(cat ~/ham/direwolf/direwolf.conf | grep '^ADEVICE' | grep -E -o ':[0-9]+,' | tr -d ':,')"
+    #DIREWOLF_DEVICE="$(cat ~/ham/direwolf/direwolf.conf | grep '^ADEVICE' | grep -E -o ',[0-9]+$' | tr -d ':,')"
+
+    echo -n "starting direwolf..."
+    start-stop-daemon --start -p $DIREWOLF_PIDFILE -b -m -C -x $(which direwolf) -- -c $DIREWOLF_CONF -p >> $DIREWOLF_LOG 2>&1
+
+    # make sure direwolf actually started
+    sleep 0.5
+    if ! is_running "$DIREWOLF_PIDFILE"; then
+        echo ""
+        echo "direwolf failed to start."
+        echo "are you sure that the card/device for direwolf is available and not opened by some other process?"
+        echo "check logs in ${DIREWOLF_LOG}."
+        exit 1
+    fi
+
+    echo "done."
+
+    echo -n "starting kissattach..."
+    sudo start-stop-daemon --start -p $KISS_PIDFILE -m -x $(which kissattach) -- $(readlink /tmp/kisstnc) $KISS_PORT
+    echo "done."
+
+    echo -n "turning off kiss crc..."
+    sudo kissparms -c 1 -p $KISS_PORT
+    echo "done."
+
+    if [[ ! -z "$use_kissutil" ]]; then
+        echo -n "starting kissutil..."
+        start-stop-daemon --start -b -m -C -p $KISSUTIL_PIDFILE -x $(which kissutil) -- -T "%H:%M:%S %Z" -v >> $KISS_LOG 2>&1
+        echo "done."
+    fi
+
+elif [[ ! -z "$STOP_EVERYTHING" ]]; then
+    if [[ ! -z "$KISSUTIL_PIDFILE" ]] && is_running "$KISSUTIL_PIDFILE"; then
+        echo -n "stopping kissutil"
+        start-stop-daemon --stop -p $KISSUTIL_PIDFILE
+        echo "done."
+    fi
+
+    echo -n "stopping kissattach..."
+    start-stop-daemon --stop -p $KISS_PIDFILE
+    echo "done."
+
+    echo -n "stopping direwolf..."
+    start-stop-daemon --stop -p $DIREWOLF_PIDFILE
+    echo "done."
+fi
